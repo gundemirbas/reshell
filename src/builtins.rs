@@ -1,4 +1,4 @@
-use crate::syscalls::{write, chdir, open, close, getdents64, getcwd, STDOUT, O_RDONLY, O_DIRECTORY};
+use crate::syscalls::{write, chdir, open, close, getdents64, STDOUT, O_RDONLY, O_DIRECTORY};
 use crate::storage::{ENV_STORAGE, HISTORY, ALIASES};
 use crate::utils::{trim_spaces, sort_entries};
 use crate::parser::{expand_env_vars, DirentParser};
@@ -81,6 +81,15 @@ pub fn builtin_serve(args: &[u8]) {
             port_num
         }
     };
+    
+    print(b"Starting HTTP server on port ");
+    use crate::io::print_number;
+    print_number(port as i64);
+    print(b"...\n");
+    print(b"Server running! Press Ctrl+C to stop.\n");
+    print(b"Visit http://localhost:");
+    print_number(port as i64);
+    print(b"/\n\n");
     
     start_http_server(port);
 }
@@ -219,4 +228,40 @@ pub fn builtin_ls(path: &[u8]) {
             print(b"\n");
         }
     }
+}
+
+pub fn builtin_servepty(args: &[u8]) {
+    use crate::server::start_pty_server;
+    
+    let args = trim_spaces(args);
+    
+    // Parse port number, default to 8080
+    let port = if args.is_empty() {
+        8080
+    } else {
+        let mut port_num = 0u16;
+        for &b in args {
+            if b >= b'0' && b <= b'9' {
+                port_num = port_num * 10 + (b - b'0') as u16;
+            } else {
+                break;
+            }
+        }
+        if port_num == 0 {
+            8080
+        } else {
+            port_num
+        }
+    };
+    
+    print(b"Starting PTY WebSocket server on port ");
+    use crate::io::print_number;
+    print_number(port as i64);
+    print(b"...\n");
+    print(b"Server running! Press Ctrl+C to stop.\n");
+    print(b"Connect via WebSocket to ws://localhost:");
+    print_number(port as i64);
+    print(b"/\n\n");
+    
+    start_pty_server(port);
 }

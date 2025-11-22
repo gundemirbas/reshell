@@ -167,8 +167,8 @@ fn parse_http_request(request: &[u8]) -> (&[u8], &[u8], &[u8]) {
     (method, path, body)
 }
 
-fn generate_directory_listing(path: &[u8]) -> ([u8; 4096], usize) {
-    let mut html = [0u8; 4096];
+fn generate_directory_listing(path: &[u8], url_path: &[u8]) -> ([u8; 2048], usize) {
+    let mut html = [0u8; 2048];
     let mut pos = 0;
     
     // HTML header with CSS and upload form
@@ -276,6 +276,30 @@ fn generate_directory_listing(path: &[u8]) -> ([u8; 4096], usize) {
                 pos += 1;
             }
             
+            // Add URL path prefix (if not root)
+            if url_path.len() > 1 {
+                for j in 0..url_path.len() {
+                    if pos >= html.len() { break; }
+                    if url_path[j] == 0 { break; }
+                    html[pos] = url_path[j];
+                    pos += 1;
+                }
+                // Add separator if needed
+                if url_path[url_path.len() - 1] != b'/' {
+                    if pos < html.len() {
+                        html[pos] = b'/';
+                        pos += 1;
+                    }
+                }
+            } else {
+                // Root directory
+                if pos < html.len() {
+                    html[pos] = b'/';
+                    pos += 1;
+                }
+            }
+            
+            // Add filename
             for j in 0..len {
                 if pos >= html.len() { break; }
                 html[pos] = entries[i][j];
@@ -323,11 +347,10 @@ fn generate_directory_listing(path: &[u8]) -> ([u8; 4096], usize) {
 }
 
 fn handle_post_upload(body: &[u8], filename_out: &mut [u8], content_out: &mut [u8]) -> (usize, usize, bool) {
-    // Parse POST body: filename=xxx&content=yyy
     let mut filename_start = 0;
     let mut filename_end = 0;
     let mut content_start = 0;
-    let mut content_end = body.len();
+    let content_end = body.len();
     
     // Find "filename="
     for i in 0..body.len().saturating_sub(9) {
@@ -427,8 +450,8 @@ fn hex_to_byte(c: u8) -> u8 {
     }
 }
 
-fn serve_file(path: &[u8]) -> ([u8; 65536], usize, &'static [u8]) {
-    let mut content = [0u8; 65536];
+fn serve_file(path: &[u8]) -> ([u8; 32768], usize, &'static [u8]) {
+    let mut content = [0u8; 32768];
     
     let fd = open(path, O_RDONLY);
     if fd < 0 {
@@ -497,8 +520,8 @@ fn detect_content_type(path: &[u8]) -> &'static [u8] {
     b"application/octet-stream"
 }
 
-fn generate_upload_success_page(filename: &[u8], content: &[u8]) -> ([u8; 8192], usize) {
-    let mut html = [0u8; 8192];
+fn generate_upload_success_page(filename: &[u8], content: &[u8]) -> ([u8; 4096], usize) {
+    let mut html = [0u8; 4096];
     let mut pos = 0;
     
     let header = b"<!DOCTYPE html>
@@ -620,19 +643,7 @@ fn generate_upload_success_page(filename: &[u8], content: &[u8]) -> ([u8; 8192],
 }
 
 pub fn start_http_server(port: u16) {
-    print(b"Starting HTTP server on port ");
-    let mut port_str = [0u8; 10];
-    let mut digits = 0;
-    let mut temp = port as usize;
-    while temp > 0 {
-        port_str[digits] = b'0' + (temp % 10) as u8;
-        temp /= 10;
-        digits += 1;
-    }
-    for i in (0..digits).rev() {
-        write(STDOUT, &[port_str[i]]);
-    }
-    print(b"...\n");
+    // Note: Logging removed to avoid race conditions when running in thread
     
     // Create socket
     let sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -666,12 +677,6 @@ pub fn start_http_server(port: u16) {
         return;
     }
     
-    print(b"Server running! Press Ctrl+C to stop.\n");
-    print(b"Visit http://localhost:");
-    for i in (0..digits).rev() {
-        write(STDOUT, &[port_str[i]]);
-    }
-    print(b"/\n\n");
     
     // Get current directory
     let mut cwd = [0u8; 512];
@@ -761,8 +766,8 @@ pub fn start_http_server(port: u16) {
                     
                     // Check if it's a directory
                     if is_directory(&file_path[..fp_len+1]) {
-                        // Show directory listing
-                        let (html, html_len) = generate_directory_listing(&file_path[..fp_len+1]);
+                        // Show directory listing (pass both file system path and URL path)
+                        let (html, html_len) = generate_directory_listing(&file_path[..fp_len+1], path);
                         send_response(
                             client_fd as i32,
                             b"200 OK",
@@ -807,7 +812,7 @@ pub fn start_http_server(port: u16) {
                     }
                     path_buf[path_len] = 0;
                     
-                    let (html, html_len) = generate_directory_listing(&path_buf[..path_len + 1]);
+                    let (html, html_len) = generate_directory_listing(&path_buf[..path_len + 1], b"/");
                     
                     send_response(
                         client_fd as i32,
@@ -831,3 +836,104 @@ pub fn start_http_server(port: u16) {
         close(client_fd as i32);
     }
 }
+
+// WebSocket PTY Server
+pub fn start_pty_server(port: u16) {
+    use crate::assets::{TERMINAL_HTML, TERMINAL_JS};
+    
+    // Note: Logging removed to avoid race conditions when running in thread
+    
+    // Create socket
+    let sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if sockfd < 0 {
+        print(b"Error creating socket\n");
+        return;
+    }
+    
+    // Set SO_REUSEADDR
+    let optval = 1;
+    setsockopt(sockfd as i32, SOL_SOCKET, SO_REUSEADDR, optval);
+    
+    // Bind to port
+    let addr = SockaddrIn {
+        sin_family: AF_INET as u16,
+        sin_port: htons(port),
+        sin_addr: 0,
+        sin_zero: [0u8; 8],
+    };
+    
+    if bind(sockfd as i32, &addr) < 0 {
+        print(b"Error binding socket\n");
+        close(sockfd as i32);
+        return;
+    }
+    
+    // Listen
+    if listen(sockfd as i32, 10) < 0 {
+        print(b"Error listening on socket\n");
+        close(sockfd as i32);
+        return;
+    }
+    
+    // Accept loop
+    loop {
+        let client_fd = accept(sockfd as i32);
+        if client_fd < 0 {
+            continue;
+        }
+        
+        // Read request
+        let mut request = [0u8; 4096];
+        let n = read(client_fd as i32, &mut request);
+        
+        if n > 0 {
+            let (method, path, _) = parse_http_request(&request[..n as usize]);
+            
+            print(b"[");
+            write(STDOUT, method);
+            print(b" ");
+            write(STDOUT, path);
+            print(b"]\n");
+            
+            // Handle different paths
+            if path == b"/" || path == b"/terminal" {
+                // Serve terminal.html
+                send_response(
+                    client_fd as i32,
+                    b"200 OK",
+                    b"text/html; charset=utf-8",
+                    TERMINAL_HTML
+                );
+            } else if path == b"/terminal.js" {
+                // Serve terminal.js
+                send_response(
+                    client_fd as i32,
+                    b"200 OK",
+                    b"application/javascript",
+                    TERMINAL_JS
+                );
+            } else if path == b"/ws" {
+                // WebSocket upgrade
+                use crate::websocket::{is_websocket_upgrade, handle_websocket};
+                
+                print(b"[WS] Upgrade request received\n");
+                if is_websocket_upgrade(&request[..n as usize]) {
+                    print(b"[WS] Valid WebSocket upgrade\n");
+                    handle_websocket(client_fd as i32, &request[..n as usize]);
+                    continue; // Don't close, websocket handler will do it
+                } else {
+                    print(b"[WS] Invalid upgrade request\n");
+                    let error = b"HTTP/1.1 400 Bad Request\r\n\r\nNot a valid WebSocket upgrade request";
+                    write(client_fd as i32, error);
+                }
+            } else {
+                // 404
+                let error = b"HTTP/1.1 404 Not Found\r\n\r\nNot Found";
+                write(client_fd as i32, error);
+            }
+        }
+        
+        close(client_fd as i32);
+    }
+}
+

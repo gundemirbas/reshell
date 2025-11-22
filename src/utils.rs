@@ -56,14 +56,6 @@ fn bytes_less_than(a: &[u8], b: &[u8]) -> bool {
     a.len() < b.len()
 }
 
-pub fn find_equals(input: &[u8]) -> Option<usize> {
-    for i in 0..input.len() {
-        if input[i] == b'=' {
-            return Some(i);
-        }
-    }
-    None
-}
 
 pub fn sort_entries(entries: &mut [[u8; 256]], count: usize) {
     if count <= 1 {

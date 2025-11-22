@@ -10,13 +10,16 @@ mod builtins;
 mod executor;
 mod thread;
 mod server;
+mod assets;
+mod crypto;
+mod websocket;
 
 use core::panic::PanicInfo;
 use syscalls::*;
-use io::{print, print_number, print_cstr, CStr, StaticBuffer, read_line};
+use io::{print, print_number, CStr, StaticBuffer, read_line_with_tab};
 use storage::ENV_STORAGE;
 use executor::execute_command;
-use thread::start_ticker_thread;
+use utils::bytes_equal;
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
@@ -48,44 +51,88 @@ impl Args {
     }
 }
 
+fn parse_port(bytes: &[u8]) -> Option<u16> {
+    let mut port = 0u16;
+    for &b in bytes {
+        if b >= b'0' && b <= b'9' {
+            port = port.saturating_mul(10).saturating_add((b - b'0') as u16);
+        } else if b == 0 {
+            break;
+        } else {
+            return None;
+        }
+    }
+    if port > 0 { Some(port) } else { None }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn main(argc: i64, argv: *const *const u8) -> i32 {
     let args = Args::new(argc, argv);
     
-    print(b"Shell started with ");
-    print_number(argc);
-    print(b" argument(s)\n");
+    // Parse command line arguments
+    let mut serve_port = None;
+    let mut servepty_port = None;
     
-    if argc > 0 {
-        print(b"Arguments:\n");
-        for i in 0..argc {
-            print(b"  [");
-            print_number(i);
-            print(b"]: ");
-            if let Some(arg) = args.get(i) {
-                print_cstr(&arg);
+    // Simple argument parsing (no complex logic to avoid crashes)
+    // Usage: reshell --serve 8000 --servepty 8080
+    let mut i = 1;
+    while i < argc {
+        if let Some(arg) = args.get(i) {
+            let arg_bytes = arg.as_bytes();
+            
+            if bytes_equal(arg_bytes, b"--serve") || bytes_equal(arg_bytes, b"-s") {
+                if let Some(next) = args.get(i + 1) {
+                    serve_port = parse_port(next.as_bytes());
+                    i += 1;
+                }
+            } else if bytes_equal(arg_bytes, b"--servepty") || bytes_equal(arg_bytes, b"-p") {
+                if let Some(next) = args.get(i + 1) {
+                    servepty_port = parse_port(next.as_bytes());
+                    i += 1;
+                }
             }
-            print(b"\n");
         }
-        print(b"\n");
+        i += 1;
     }
     
-    print(b"Minimal Shell v0.2 - Type 'exit' to quit\n");
-    print(b"Features: tab completion, env vars, aliases, history\n");
-    print(b"Builtins: ls, cd, pwd, export, echo, env, alias, history\n");
-    print(b"[Ticker thread active - prints # every 10s]\n");
+    print(b"Minimal Shell v0.2\n");
+    print(b"Features: tab completion, env vars, aliases, history, HTTP server\n");
+    print(b"Builtins: ls, cd, pwd, export, echo, env, alias, history, serve, servepty\n\n");
     
     ENV_STORAGE.set(b"HOME", b"/home");
     ENV_STORAGE.set(b"USER", b"user");
     ENV_STORAGE.set(b"PATH", b"/bin:/usr/bin");
     
-    start_ticker_thread();
+    // Start server threads if requested
+    use crate::thread::{start_http_server_thread, start_pty_server_thread};
+    
+    let mut server_mode = false;
+    
+    if let Some(port) = serve_port {
+        print(b"[INFO] Starting HTTP server on port ");
+        print_number(port as i64);
+        print(b"\n");
+        start_http_server_thread(port);
+        server_mode = true;
+    }
+    
+    if let Some(port) = servepty_port {
+        print(b"[INFO] Starting PTY WebSocket server on port ");
+        print_number(port as i64);
+        print(b"\n");
+        start_pty_server_thread(port);
+        server_mode = true;
+    }
+    
+    if server_mode {
+        print(b"\nServers started. Press Ctrl+C to quit or use the shell below.\n\n");
+    }
     
     loop {
         print(b"$ ");
         
         let should_break = INPUT_BUF.with_mut(|buf| {
-            let n = read_line(buf);
+            let n = read_line_with_tab(buf);
             if n == 0 {
                 return true;
             }

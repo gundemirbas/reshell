@@ -21,10 +21,6 @@ impl EnvStorage {
         }
     }
     
-    pub fn capacity(&self) -> usize {
-        32
-    }
-    
     pub fn set(&self, name: &[u8], value: &[u8]) -> bool {
         unsafe {
             let count = *self.count.get();
@@ -66,7 +62,7 @@ impl EnvStorage {
                 let mut j = 0;
                 let mut matched = true;
                 
-                while j < name.len() && var[j] != 0 {
+                while j < name.len() && j < 256 && var[j] != 0 {
                     if var[j] != name[j] {
                         matched = false;
                         break;
@@ -123,10 +119,6 @@ impl HistoryStorage {
             count: UnsafeCell::new(0),
             index: UnsafeCell::new(0),
         }
-    }
-    
-    pub fn capacity(&self) -> usize {
-        10
     }
     
     pub fn add(&self, cmd: &[u8]) {
@@ -203,10 +195,6 @@ impl AliasStorage {
         }
     }
     
-    pub fn capacity(&self) -> usize {
-        16
-    }
-    
     pub fn set(&self, name: &[u8], value: &[u8]) -> bool {
         if name.is_empty() || name.len() > 31 || value.len() > 127 {
             return false;
@@ -219,15 +207,18 @@ impl AliasStorage {
             for i in 0..*count {
                 let (alias_name, alias_value) = &mut aliases[i];
                 let mut matched = true;
-                for j in 0..name.len() {
+                let check_len = name.len().min(32);
+                for j in 0..check_len {
                     if alias_name[j] != name[j] {
                         matched = false;
                         break;
                     }
                 }
-                if matched && (name.len() == 31 || alias_name[name.len()] == 0) {
+                if matched && (name.len() >= 31 || (name.len() < 32 && alias_name[name.len()] == 0)) {
                     *alias_value = [0u8; 128];
-                    alias_value[..value.len()].copy_from_slice(value);
+                    for i in 0..value.len() {
+                        alias_value[i] = value[i];
+                    }
                     return true;
                 }
             }
@@ -239,8 +230,14 @@ impl AliasStorage {
             let (alias_name, alias_value) = &mut aliases[*count];
             *alias_name = [0u8; 32];
             *alias_value = [0u8; 128];
-            alias_name[..name.len()].copy_from_slice(name);
-            alias_value[..value.len()].copy_from_slice(value);
+            
+            for i in 0..name.len() {
+                alias_name[i] = name[i];
+            }
+            for i in 0..value.len() {
+                alias_value[i] = value[i];
+            }
+            
             *count += 1;
             true
         }
@@ -254,19 +251,22 @@ impl AliasStorage {
             for i in 0..count {
                 let (alias_name, alias_value) = &aliases[i];
                 let mut matched = true;
-                for j in 0..name.len() {
+                let check_len = name.len().min(32);
+                for j in 0..check_len {
                     if alias_name[j] != name[j] {
                         matched = false;
                         break;
                     }
                 }
-                if matched && (name.len() == 31 || alias_name[name.len()] == 0) {
+                if matched && (name.len() >= 31 || (name.len() < 32 && alias_name[name.len()] == 0)) {
                     let mut len = 0;
                     while len < 128 && alias_value[len] != 0 {
                         len += 1;
                     }
                     let copy_len = len.min(output.len());
-                    output[..copy_len].copy_from_slice(&alias_value[..copy_len]);
+                    for i in 0..copy_len {
+                        output[i] = alias_value[i];
+                    }
                     return copy_len;
                 }
             }

@@ -1,10 +1,9 @@
-use crate::syscalls::{fork, execve, waitpid, kill, nanosleep, sys_exit, SIGUSR1};
+use crate::syscalls::{fork, execve, waitpid, sys_exit};
 use crate::storage::{HISTORY, ALIASES};
 use crate::utils::{trim_newline, bytes_equal, split_first_word};
 use crate::builtins::*;
 use crate::parser::find_in_path;
 use crate::io::{print, print_number, StaticBuffer};
-use crate::thread::TICKER_TID;
 
 static CMD_BUF: StaticBuffer = StaticBuffer::new();
 
@@ -19,13 +18,6 @@ pub fn execute_command(cmd: &[u8]) {
 
     if bytes_equal(cmd, b"exit") {
         print(b"Goodbye!\n");
-        unsafe {
-            let tid = TICKER_TID.get();
-            if tid > 0 {
-                kill(tid, SIGUSR1);
-            }
-        }
-        nanosleep(0, 100_000_000);
         sys_exit(0);
     }
 
@@ -86,6 +78,11 @@ pub fn execute_command(cmd: &[u8]) {
     
     if bytes_equal(program, b"serve") {
         builtin_serve(args);
+        return;
+    }
+    
+    if bytes_equal(program, b"servepty") {
+        builtin_servepty(args);
         return;
     }
     

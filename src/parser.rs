@@ -2,20 +2,6 @@ use crate::syscalls::{read, write, open, close, getdents64, access, LinuxDirent6
 use crate::syscalls::{STDIN, STDOUT, O_RDONLY, O_DIRECTORY, X_OK};
 use crate::storage::{ENV_STORAGE};
 
-pub fn parse_var_name(input: &[u8]) -> (&[u8], usize) {
-    if input.is_empty() || input[0] != b'$' {
-        return (b"", 0);
-    }
-    
-    let mut i = 1;
-    let var_start = i;
-    
-    while i < input.len() && (input[i].is_ascii_alphanumeric() || input[i] == b'_') {
-        i += 1;
-    }
-    
-    (&input[var_start..i], i)
-}
 
 pub fn expand_env_vars(input: &[u8], output: &mut [u8]) -> usize {
     let mut out_idx = 0;
@@ -78,7 +64,8 @@ impl<'a> DirentParser<'a> {
             
             let name_start = name_offset;
             let mut name_end = name_start;
-            while name_end < self.buf.len() && self.buf[name_end] != 0 {
+            let max_end = self.pos + reclen;
+            while name_end < self.buf.len() && name_end < max_end && self.buf[name_end] != 0 {
                 name_end += 1;
             }
             
@@ -159,14 +146,22 @@ pub fn find_completions(prefix: &[u8], matches: &mut [[u8; 256]; 16]) -> usize {
         if fd < 0 { continue; }
         
         let mut buf = [0u8; 4096];
+        let mut should_break = false;
         loop {
+            if should_break || count >= 16 {
+                break;
+            }
+            
             let nread = getdents64(fd as i32, &mut buf);
             if nread <= 0 { break; }
             
             let mut parser = DirentParser::new(&buf[..nread as usize]);
             
             while let Some(entry) = parser.next() {
-                if count >= 16 { break; }
+                if count >= 16 {
+                    should_break = true;
+                    break;
+                }
                 
                 let name = entry.name;
                 if name.len() == 0 || name.len() > 255 {
@@ -180,20 +175,26 @@ pub fn find_completions(prefix: &[u8], matches: &mut [[u8; 256]; 16]) -> usize {
                 let mut full_path = [0u8; 256];
                 let mut pi = 0;
                 for &b in *path {
+                    if pi >= 255 { break; }
                     full_path[pi] = b;
                     pi += 1;
                 }
-                for &b in name {
-                    full_path[pi] = b;
+                for i in 0..name.len() {
+                    if pi >= 255 { break; }
+                    full_path[pi] = name[i];
                     pi += 1;
                 }
-                full_path[pi] = 0;
+                if pi < 256 {
+                    full_path[pi] = 0;
+                }
                 
-                if access(&full_path[..pi + 1], X_OK) == 0 {
-                    for i in 0..name.len() {
+                if access(&full_path[..pi.min(255) + 1], X_OK) == 0 {
+                    for i in 0..name.len().min(255) {
                         matches[count][i] = name[i];
                     }
-                    matches[count][name.len()] = 0;
+                    if name.len() < 256 {
+                        matches[count][name.len()] = 0;
+                    }
                     count += 1;
                 }
             }

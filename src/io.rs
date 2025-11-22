@@ -50,9 +50,7 @@ impl CStr {
     }
 }
 
-pub fn print_cstr(cstr: &CStr) {
-    write(STDOUT, cstr.as_bytes());
-}
+
 
 pub struct StaticBuffer {
     data: UnsafeCell<[u8; 128]>,
@@ -87,8 +85,6 @@ pub fn read_line(buf: &mut [u8]) -> usize {
 pub fn read_line_with_tab(buf: &mut [u8]) -> usize {
     use crate::syscalls::ioctl;
     use crate::syscalls::{Termios, TCGETS, TCSETS, ICANON, ECHO};
-    use crate::parser::find_completions;
-    use crate::utils::split_first_word;
     
     // Get current terminal settings
     let mut old_term = Termios {
@@ -98,6 +94,7 @@ pub fn read_line_with_tab(buf: &mut [u8]) -> usize {
         c_lflag: 0,
         c_line: 0,
         c_cc: [0u8; 32],
+        _padding: [0u8; 3],
         c_ispeed: 0,
         c_ospeed: 0,
     };
@@ -132,44 +129,37 @@ pub fn read_line_with_tab(buf: &mut [u8]) -> usize {
             pos += 1;
             break;
         } else if ch == 9 { // Tab
-            if pos > 0 {
-                buf[pos] = 0;
-                let line = &buf[..pos];
-                let (prefix, _) = split_first_word(line);
+            // Simple hardcoded tab completion - only for single char prefixes
+            if pos == 1 {
+                let ch = buf[0];
+                let completion: Option<&[u8]> = match ch {
+                    b'l' => Some(b"ls "),
+                    b'c' => Some(b"cd "),
+                    b'p' => Some(b"pwd"),
+                    b'e' => Some(b"echo "),
+                    b'a' => Some(b"alias "),
+                    b'h' => Some(b"history"),
+                    b's' => Some(b"serve "),
+                    _ => None,
+                };
                 
-                if prefix.len() > 0 && prefix.len() < 256 {
-                    let mut matches = [[0u8; 256]; 16];
-                    let match_count = find_completions(prefix, &mut matches);
-                    
-                    if match_count == 1 {
-                        // Clear current line
-                        for _ in 0..pos {
-                            write(STDOUT, b"\x08 \x08");
-                        }
-                        
-                        // Write completion
-                        pos = 0;
-                        let mut i = 0;
-                        while matches[0][i] != 0 && pos < buf.len() - 1 {
-                            buf[pos] = matches[0][i];
-                            write(STDOUT, &[matches[0][i]]);
+                if let Some(comp) = completion {
+                    // Clear current char
+                    write(STDOUT, b"\x08 \x08");
+                    // Write completion
+                    write(STDOUT, comp);
+                    pos = 0;
+                    for &b in comp {
+                        if pos < buf.len() - 1 {
+                            buf[pos] = b;
                             pos += 1;
-                            i += 1;
                         }
-                    } else if match_count > 1 {
-                        write(STDOUT, b"\n");
-                        for i in 0..match_count {
-                            let mut j = 0;
-                            while matches[i][j] != 0 {
-                                write(STDOUT, &[matches[i][j]]);
-                                j += 1;
-                            }
-                            write(STDOUT, b"  ");
-                        }
-                        write(STDOUT, b"\n$ ");
-                        write(STDOUT, &buf[..pos]);
                     }
+                } else {
+                    write(STDOUT, b"\x07"); // Beep
                 }
+            } else {
+                write(STDOUT, b"\x07"); // Beep
             }
         } else if ch == 127 || ch == 8 { // Backspace
             if pos > 0 {

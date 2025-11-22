@@ -129,40 +129,72 @@ pub unsafe fn sys_clone_with_func(
     stack: *mut u8,
     func: fn() -> !,
 ) -> isize {
-    // Stack'e fonksiyon pointer'ını yaz
-    let stack_top = stack as *mut u64;
-    let func_slot = unsafe { stack_top.offset(-2) };  // 2 word geriye (16 byte alignment için)
-    unsafe { *func_slot = func as u64 };
-    
     let ret: isize;
+    let func_ptr = func as usize;
+    
+    // Prepare child stack: write function pointer at top
+    // Stack grows downward, so we place it just below stack top
+    // Ensure 16-byte alignment for x86-64 ABI
+    let stack_top = stack as usize;
+    let aligned_top = stack_top & !0xF;
+    
+    // Write function pointer 8 bytes below the aligned top
+    let func_slot = (aligned_top - 8) as *mut usize;
+    unsafe {
+        *func_slot = func_ptr;
+    }
+    
+    // Child stack pointer: points to the function pointer
+    let child_stack = func_slot as *mut u8;
+    
     unsafe {
         core::arch::asm!(
-            "mov rax, 56",      // clone syscall
+            // Syscall: clone(flags, child_stack, parent_tid, tls, child_tid)
+            "mov rax, 56",
             "syscall",
+            
+            // Check return value
+            // Parent gets child TID (> 0), child gets 0
             "test rax, rax",
-            "jnz 2f",           // parent branch
+            "jnz 2f",
             
-            // Child thread
-            "xor rbp, rbp",     // clear frame pointer  
-            "pop rax",          // get function from stack
-            "call rax",         // call it
+            // ========== CHILD THREAD ==========
+            // rsp now points to child_stack (the location we provided)
+            // At [rsp] we have the function pointer
             
-            // Exit if function returns (shouldn't happen)
-            "mov rax, 60",
-            "xor rdi, rdi",
-            "syscall",
+            // Pop function pointer from stack into rax
+            "pop rax",
             
-            "2:",               // parent continues
+            // Clear frame pointer (rbp) for clean backtrace
+            "xor rbp, rbp",
+            
+            // Stack is already aligned (we popped 8 bytes from 16-byte aligned address)
+            // Now rsp is 8 bytes above alignment, we need to push a dummy value
+            "push rbp",  // Push 0 to re-align to 16 bytes
+            
+            // Jump to the function (never returns)
+            "jmp rax",
+            
+            // ========== PARENT THREAD ==========
+            "2:",
+            // rax already contains child TID
+            
             in("rdi") flags,
-            in("rsi") func_slot,
+            in("rsi") child_stack,
             in("rdx") 0u64,
             in("r10") 0u64,
             in("r8") 0u64,
             lateout("rax") ret,
             lateout("rcx") _,
             lateout("r11") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            lateout("r10") _,
+            lateout("r8") _,
         );
     }
+    
     ret
 }
 
@@ -195,47 +227,6 @@ pub fn nanosleep(seconds: i64, nanoseconds: i64) -> isize {
         tv_nsec: nanoseconds,
     };
     unsafe { sys_nanosleep_raw(&req, core::ptr::null_mut()) }
-}
-
-// Signal syscalls
-pub const SIGUSR1: i32 = 10;
-
-unsafe fn sys_kill_raw(pid: i32, sig: i32) -> isize {
-    let ret: isize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 62,
-            in("rdi") pid,
-            in("rsi") sig,
-            lateout("rax") ret,
-            lateout("rcx") _,
-            lateout("r11") _,
-        );
-    }
-    ret
-}
-
-pub fn kill(pid: i32, sig: i32) -> isize {
-    unsafe { sys_kill_raw(pid, sig) }
-}
-
-unsafe fn sys_gettid_raw() -> isize {
-    let ret: isize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 186,
-            lateout("rax") ret,
-            lateout("rcx") _,
-            lateout("r11") _,
-        );
-    }
-    ret
-}
-
-pub fn gettid() -> isize {
-    unsafe { sys_gettid_raw() }
 }
 
 // chdir syscall for cd command
@@ -298,7 +289,6 @@ pub fn getcwd(buf: &mut [u8]) -> isize {
 // open syscall for directory
 pub const O_RDONLY: i32 = 0;
 pub const O_WRONLY: i32 = 1;
-pub const O_RDWR: i32 = 2;
 pub const O_CREAT: i32 = 0x40;
 pub const O_TRUNC: i32 = 0x200;
 pub const O_DIRECTORY: i32 = 0x10000;
@@ -415,6 +405,7 @@ pub struct Termios {
     pub c_lflag: u32,
     pub c_line: u8,
     pub c_cc: [u8; 32],
+    pub _padding: [u8; 3],
     pub c_ispeed: u32,
     pub c_ospeed: u32,
 }
@@ -442,7 +433,6 @@ pub struct Stat {
     pub __unused: [i64; 3],
 }
 
-pub const S_IFMT: u32 = 0o170000;
 pub const S_IFDIR: u32 = 0o040000;
 
 unsafe fn sys_stat_raw(pathname: *const u8, statbuf: *mut Stat) -> isize {
@@ -466,7 +456,6 @@ pub fn stat(path: &[u8], statbuf: &mut Stat) -> isize {
 }
 
 // access syscall
-pub const F_OK: i32 = 0;
 pub const X_OK: i32 = 1;
 
 unsafe fn sys_access_raw(pathname: *const u8, mode: i32) -> isize {
@@ -487,28 +476,6 @@ unsafe fn sys_access_raw(pathname: *const u8, mode: i32) -> isize {
 
 pub fn access(path: &[u8], mode: i32) -> isize {
     unsafe { sys_access_raw(path.as_ptr(), mode) }
-}
-
-// readlink syscall
-unsafe fn sys_readlink_raw(pathname: *const u8, buf: *mut u8, bufsiz: usize) -> isize {
-    let ret: isize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 89,
-            in("rdi") pathname,
-            in("rsi") buf,
-            in("rdx") bufsiz,
-            lateout("rax") ret,
-            lateout("rcx") _,
-            lateout("r11") _,
-        );
-    }
-    ret
-}
-
-pub fn readlink(path: &[u8], buf: &mut [u8]) -> isize {
-    unsafe { sys_readlink_raw(path.as_ptr(), buf.as_mut_ptr(), buf.len()) }
 }
 
 // Socket constants

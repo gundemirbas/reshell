@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terminal - reshell</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Courier New', Courier, monospace;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .header {
+            background: #2d2d2d;
+            padding: 10px 20px;
+            border-bottom: 2px solid #4ec9b0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header h1 {
+            color: #4ec9b0;
+            font-size: 1.5rem;
+        }
+        
+        .status {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #f48771;
+        }
+        
+        .status-indicator.connected {
+            background: #4ec9b0;
+        }
+        
+        .terminal-container {
+            flex: 1;
+            background: #1e1e1e;
+            padding: 20px;
+            overflow-y: auto;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        
+        .terminal-output {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            color: #d4d4d4;
+        }
+        
+        .input-container {
+            background: #2d2d2d;
+            padding: 10px 20px;
+            border-top: 1px solid #3e3e3e;
+            display: flex;
+            gap: 10px;
+        }
+        
+        .input-container input {
+            flex: 1;
+            background: #3e3e3e;
+            border: 1px solid #555;
+            color: #d4d4d4;
+            padding: 8px 12px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 14px;
+            border-radius: 3px;
+        }
+        
+        .input-container input:focus {
+            outline: none;
+            border-color: #4ec9b0;
+        }
+        
+        .input-container button {
+            background: #4ec9b0;
+            color: #1e1e1e;
+            border: none;
+            padding: 8px 20px;
+            cursor: pointer;
+            font-weight: bold;
+            border-radius: 3px;
+            transition: background 0.2s;
+        }
+        
+        .input-container button:hover {
+            background: #3eb89f;
+        }
+        
+        .input-container button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        
+        .error {
+            color: #f48771;
+        }
+        
+        .info {
+            color: #858585;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📟 reshell Terminal</h1>
+        <div class="status">
+            <span id="status-text">Disconnected</span>
+            <div class="status-indicator" id="status-indicator"></div>
+        </div>
+    </div>
+    
+    <div class="terminal-container" id="terminal">
+        <div class="terminal-output" id="output">
+            <span class="info">Connecting to server...</span>
+        </div>
+    </div>
+    
+    <div class="input-container">
+        <input 
+            type="text" 
+            id="command-input" 
+            placeholder="Type command and press Enter or click Send..." 
+            disabled
+        />
+        <button id="send-btn" disabled>Send</button>
+        <button id="clear-btn">Clear</button>
+    </div>
+    
+    <script src="terminal.js"></script>
+</body>
+</html>
