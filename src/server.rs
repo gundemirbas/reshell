@@ -3,6 +3,35 @@ use crate::io::print;
 use crate::parser::DirentParser;
 use crate::utils::sort_entries;
 
+fn is_directory(path: &[u8]) -> bool {
+    let mut statbuf = Stat {
+        st_dev: 0,
+        st_ino: 0,
+        st_nlink: 0,
+        st_mode: 0,
+        st_uid: 0,
+        st_gid: 0,
+        __pad0: 0,
+        st_rdev: 0,
+        st_size: 0,
+        st_blksize: 0,
+        st_blocks: 0,
+        st_atime: 0,
+        st_atime_nsec: 0,
+        st_mtime: 0,
+        st_mtime_nsec: 0,
+        st_ctime: 0,
+        st_ctime_nsec: 0,
+        __unused: [0; 3],
+    };
+    
+    if stat(path, &mut statbuf) >= 0 {
+        (statbuf.st_mode & S_IFDIR) != 0
+    } else {
+        false
+    }
+}
+
 // File permission: 0644 (rw-r--r--)
 const FILE_MODE: i32 = 0o644;
 
@@ -705,7 +734,7 @@ pub fn start_http_server(port: u16) {
             } else if method == b"GET" {
                 // Check if requesting a specific file
                 if path.len() > 1 && path[0] == b'/' {
-                    // Serve file
+                    // Build full path
                     let mut file_path = [0u8; 512];
                     let mut fp_len = 0;
                     
@@ -730,39 +759,37 @@ pub fn start_http_server(port: u16) {
                     }
                     file_path[fp_len] = 0;
                     
-                    let (file_content, file_len, content_type) = serve_file(&file_path[..fp_len+1]);
-                    
-                    if file_len > 0 {
-                        send_response(
-                            client_fd as i32,
-                            b"200 OK",
-                            content_type,
-                            &file_content[..file_len]
-                        );
-                    } else {
-                        // File not found, show directory listing
-                        let mut path_buf = [0u8; 512];
-                        let mut path_len = 0;
-                        
-                        if cwd_len > 0 {
-                            for i in 0..cwd_len as usize {
-                                path_buf[path_len] = cwd[i];
-                                path_len += 1;
-                            }
-                        } else {
-                            path_buf[0] = b'.';
-                            path_len = 1;
-                        }
-                        path_buf[path_len] = 0;
-                        
-                        let (html, html_len) = generate_directory_listing(&path_buf[..path_len + 1]);
-                        
+                    // Check if it's a directory
+                    if is_directory(&file_path[..fp_len+1]) {
+                        // Show directory listing
+                        let (html, html_len) = generate_directory_listing(&file_path[..fp_len+1]);
                         send_response(
                             client_fd as i32,
                             b"200 OK",
                             b"text/html; charset=utf-8",
                             &html[..html_len]
                         );
+                    } else {
+                        // Try to serve as file
+                        let (file_content, file_len, content_type) = serve_file(&file_path[..fp_len+1]);
+                        
+                        if file_len > 0 {
+                            send_response(
+                                client_fd as i32,
+                                b"200 OK",
+                                content_type,
+                                &file_content[..file_len]
+                            );
+                        } else {
+                            // File not found
+                            let error_html = b"<!DOCTYPE html><html><head><title>404 Not Found</title></head><body style='font-family:monospace;background:#1e1e1e;color:#f48771;padding:20px;'><h1>404 Not Found</h1><p>The requested file was not found.</p><a href='/' style='color:#569cd6;'>Back to listing</a></body></html>";
+                            send_response(
+                                client_fd as i32,
+                                b"404 Not Found",
+                                b"text/html; charset=utf-8",
+                                error_html
+                            );
+                        }
                     }
                 } else {
                     // Root path - show directory listing
