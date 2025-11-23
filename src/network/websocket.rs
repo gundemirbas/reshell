@@ -1,157 +1,17 @@
 use crate::syscalls::{read, write, close, STDOUT};
 use crate::io::print;
 use crate::system::crypto::{sha1, base64_encode};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use crate::shell::{allocate_session, free_session, get_session, execute_command_in_session};
 
-// Shared message buffer for broadcasting
-const MAX_MESSAGES: usize = 100;
-const MAX_MSG_LEN: usize = 512;
-
-// Shell command queue
-const MAX_SHELL_CMDS: usize = 10;
-static SHELL_CMD_BUFFER: [AtomicUsize; MAX_SHELL_CMDS * (MAX_MSG_LEN + 1)] = [const { AtomicUsize::new(0) }; MAX_SHELL_CMDS * (MAX_MSG_LEN + 1)];
-static SHELL_CMD_WRITE_IDX: AtomicUsize = AtomicUsize::new(0);
-static SHELL_CMD_READ_IDX: AtomicUsize = AtomicUsize::new(0);
-
-// Input buffer for building commands (flat array)
-const MAX_INPUT_LEN: usize = 512;
-static INPUT_BUFFERS: [AtomicUsize; 16 * 512] = [const { AtomicUsize::new(0) }; 16 * 512];
-static INPUT_BUFFER_LENS: [AtomicUsize; 16] = [const { AtomicUsize::new(0) }; 16];
-
-fn get_input_base(client_idx: usize) -> usize {
-    client_idx * MAX_INPUT_LEN
+// Legacy broadcast/queue functions for backwards compatibility with main.rs
+// These are no longer used in per-session websocket implementation
+pub fn broadcast_message(_msg: &[u8]) {
+    // No-op: each session now has its own I/O
 }
 
-fn append_to_input(client_idx: usize, ch: u8) {
-    let base = get_input_base(client_idx);
-    let len = INPUT_BUFFER_LENS[client_idx].load(Ordering::Acquire);
-    if len < MAX_INPUT_LEN {
-        INPUT_BUFFERS[base + len].store(ch as usize, Ordering::Release);
-        INPUT_BUFFER_LENS[client_idx].store(len + 1, Ordering::Release);
-    }
-}
-
-fn get_input_buffer(client_idx: usize, out: &mut [u8]) -> usize {
-    let base = get_input_base(client_idx);
-    let len = INPUT_BUFFER_LENS[client_idx].load(Ordering::Acquire).min(out.len());
-    for i in 0..len {
-        out[i] = INPUT_BUFFERS[base + i].load(Ordering::Acquire) as u8;
-    }
-    len
-}
-
-fn clear_input_buffer(client_idx: usize) {
-    INPUT_BUFFER_LENS[client_idx].store(0, Ordering::Release);
-}
-
-fn backspace_input(client_idx: usize) {
-    let len = INPUT_BUFFER_LENS[client_idx].load(Ordering::Acquire);
-    if len > 0 {
-        INPUT_BUFFER_LENS[client_idx].store(len - 1, Ordering::Release);
-    }
-}
-
-pub fn queue_shell_command(cmd: &[u8]) {
-    let write_idx = SHELL_CMD_WRITE_IDX.load(Ordering::Acquire);
-    let read_idx = SHELL_CMD_READ_IDX.load(Ordering::Acquire);
-    
-    // Check if queue is full
-    if write_idx - read_idx >= MAX_SHELL_CMDS {
-        print(b"[Shell] Command queue full!\n");
-        return;
-    }
-    
-    let slot = write_idx % MAX_SHELL_CMDS;
-    let base = slot * (MAX_MSG_LEN + 1);
-    
-    let len = cmd.len().min(MAX_MSG_LEN);
-    SHELL_CMD_BUFFER[base].store(len, Ordering::Release);
-    
-    for i in 0..len {
-        SHELL_CMD_BUFFER[base + 1 + i].store(cmd[i] as usize, Ordering::Release);
-    }
-    
-    SHELL_CMD_WRITE_IDX.fetch_add(1, Ordering::Release);
-}
-
-pub fn get_shell_command(out_buf: &mut [u8]) -> usize {
-    let read_idx = SHELL_CMD_READ_IDX.load(Ordering::Acquire);
-    let write_idx = SHELL_CMD_WRITE_IDX.load(Ordering::Acquire);
-    
-    if read_idx >= write_idx {
-        return 0;
-    }
-    
-    let slot = read_idx % MAX_SHELL_CMDS;
-    let base = slot * (MAX_MSG_LEN + 1);
-    
-    let len = SHELL_CMD_BUFFER[base].load(Ordering::Acquire);
-    if len == 0 || len > MAX_MSG_LEN {
-        SHELL_CMD_READ_IDX.fetch_add(1, Ordering::Release);
-        return 0;
-    }
-    
-    let copy_len = len.min(out_buf.len());
-    for i in 0..copy_len {
-        out_buf[i] = SHELL_CMD_BUFFER[base + 1 + i].load(Ordering::Acquire) as u8;
-    }
-    
-    SHELL_CMD_READ_IDX.fetch_add(1, Ordering::Release);
-    copy_len
-}
-
-static MESSAGE_BUFFER: [AtomicUsize; MAX_MESSAGES * (MAX_MSG_LEN + 1)] = [const { AtomicUsize::new(0) }; MAX_MESSAGES * (MAX_MSG_LEN + 1)];
-static MESSAGE_COUNT: AtomicUsize = AtomicUsize::new(0);
-static MESSAGE_READ_INDEX: [AtomicUsize; 16] = [const { AtomicUsize::new(0) }; 16]; // Per-client read position
-
-pub fn broadcast_message(msg: &[u8]) {
-    let count = MESSAGE_COUNT.load(Ordering::Acquire);
-    let slot = count % MAX_MESSAGES;
-    let base = slot * (MAX_MSG_LEN + 1);
-    
-    // Store length
-    MESSAGE_BUFFER[base].store(msg.len().min(MAX_MSG_LEN), Ordering::Release);
-    
-    // Store message data
-    for i in 0..msg.len().min(MAX_MSG_LEN) {
-        MESSAGE_BUFFER[base + 1 + i].store(msg[i] as usize, Ordering::Release);
-    }
-    
-    MESSAGE_COUNT.fetch_add(1, Ordering::Release);
-}
-
-fn get_next_message(client_idx: usize, out_buf: &mut [u8]) -> usize {
-    let read_idx = MESSAGE_READ_INDEX[client_idx].load(Ordering::Acquire);
-    let write_idx = MESSAGE_COUNT.load(Ordering::Acquire);
-    
-    if read_idx >= write_idx {
-        return 0; // No new messages
-    }
-    
-    let slot = read_idx % MAX_MESSAGES;
-    let base = slot * (MAX_MSG_LEN + 1);
-    
-    let len = MESSAGE_BUFFER[base].load(Ordering::Acquire);
-    if len == 0 || len > MAX_MSG_LEN {
-        MESSAGE_READ_INDEX[client_idx].fetch_add(1, Ordering::Release);
-        return 0;
-    }
-    
-    let copy_len = len.min(out_buf.len());
-    for i in 0..copy_len {
-        out_buf[i] = MESSAGE_BUFFER[base + 1 + i].load(Ordering::Acquire) as u8;
-    }
-    
-    MESSAGE_READ_INDEX[client_idx].fetch_add(1, Ordering::Release);
-    
-    use crate::io::{print, print_number};
-    print(b"[WS Client ");
-    print_number(client_idx as i64);
-    print(b"] Got message len=");
-    print_number(copy_len as i64);
-    print(b"\n");
-    
-    copy_len
+pub fn get_shell_command(_out_buf: &mut [u8]) -> usize {
+    // No-op: commands are executed directly in sessions
+    0
 }
 
 pub fn is_websocket_upgrade(request: &[u8]) -> bool {
@@ -279,25 +139,50 @@ pub fn handle_websocket_connection(client_fd: i32, request: &[u8]) {
 
 // WebSocket frame loop (public version for thread - called from thread with known index)
 pub fn websocket_frame_loop_with_index(client_fd: i32, client_idx: usize) {
-    // Initialize read position to current message count
-    MESSAGE_READ_INDEX[client_idx].store(MESSAGE_COUNT.load(Ordering::Acquire), Ordering::Release);
+    use crate::io::print_number;
     
-    use crate::io::{print_number};
+    // Allocate a shell session for this connection
+    let session_id = match allocate_session() {
+        Some(id) => id,
+        None => {
+            print(b"[WS] Failed to allocate session\n");
+            close(client_fd);
+            return;
+        }
+    };
+    
     print(b"[WS] Client ");
     print_number(client_idx as i64);
-    print(b" starting at message index ");
-    print_number(MESSAGE_COUNT.load(Ordering::Acquire) as i64);
+    print(b" allocated session ");
+    print_number(session_id as i64);
     print(b"\n");
     
-    websocket_frame_loop(client_fd, client_idx);
+    websocket_frame_loop(client_fd, session_id);
+    
+    // Free session when connection closes
+    free_session(session_id);
+    print(b"[WS] Session ");
+    print_number(session_id as i64);
+    print(b" freed\n");
 }
 
 // WebSocket frame loop
-fn websocket_frame_loop(client_fd: i32, client_idx: usize) {
+fn websocket_frame_loop(client_fd: i32, session_id: usize) {
     use crate::syscalls::{poll, PollFd, POLLIN};
     
+    let session = match get_session(session_id) {
+        Some(s) => s,
+        None => {
+            print(b"[WS] Invalid session\n");
+            return;
+        }
+    };
+    
     let mut buf = [0u8; 1024];
-    let mut msg_buf = [0u8; MAX_MSG_LEN];
+    let mut output_buf = [0u8; 4096];
+    
+    // Send welcome message
+    send_websocket_text(client_fd, b"Welcome to ReShell!\n$ ");
     
     loop {
         use crate::syscalls::should_shutdown;
@@ -306,13 +191,14 @@ fn websocket_frame_loop(client_fd: i32, client_idx: usize) {
             break;
         }
         
-        // Check for new broadcast messages to send
-        loop {
-            let msg_len = get_next_message(client_idx, &mut msg_buf);
-            if msg_len == 0 {
-                break;
+        // Check for output from shell session
+        if session.has_output() {
+            let len = session.read_output(&mut output_buf);
+            if len > 0 {
+                send_websocket_text(client_fd, &output_buf[..len]);
+                // Send prompt after output
+                send_websocket_text(client_fd, b"$ ");
             }
-            send_websocket_text(client_fd, &msg_buf[..msg_len]);
         }
         
         // Poll with 50ms timeout to check for incoming data
@@ -392,39 +278,35 @@ fn websocket_frame_loop(client_fd: i32, client_idx: usize) {
                     let ch = payload[i];
                     
                     if ch == b'\n' || ch == b'\r' {
-                        // Enter pressed - execute command
+                        // Enter pressed - execute command in session
                         let mut cmd = [0u8; 512];
-                        let buf_len = get_input_buffer(client_idx, &mut cmd);
+                        let cmd_len = session.get_input(&mut cmd);
                         
-                        if buf_len > 0 {
-                            // Echo the command to all clients
-                            let mut echo_msg = [0u8; 520];
-                            let mut echo_len = 0;
-                            let prefix = b"> ";
-                            for &b in prefix {
-                                echo_msg[echo_len] = b;
-                                echo_len += 1;
-                            }
-                            for j in 0..buf_len {
-                                echo_msg[echo_len] = cmd[j];
-                                echo_len += 1;
-                            }
-                            echo_msg[echo_len] = b'\n';
-                            echo_len += 1;
-                            broadcast_message(&echo_msg[..echo_len]);
+                        if cmd_len > 0 {
+                            // Echo newline
+                            send_websocket_text(client_fd, b"\n");
                             
-                            // Queue for execution
-                            queue_shell_command(&cmd[..buf_len]);
+                            // Execute command in this session
+                            execute_command_in_session(session, &cmd[..cmd_len]);
                             
-                            // Clear buffer
-                            clear_input_buffer(client_idx);
+                            // Clear input
+                            session.clear_input();
+                        } else {
+                            // Empty command, just send prompt
+                            send_websocket_text(client_fd, b"\n$ ");
                         }
                     } else if ch == 0x7f || ch == 0x08 {
                         // Backspace/Delete
-                        backspace_input(client_idx);
+                        if session.input_len() > 0 {
+                            session.backspace_input();
+                            // Send backspace sequence to client
+                            send_websocket_text(client_fd, b"\x08 \x08");
+                        }
                     } else if ch >= 32 && ch < 127 {
                         // Printable character
-                        append_to_input(client_idx, ch);
+                        session.append_input(ch);
+                        // Echo character back to client
+                        send_websocket_text(client_fd, &[ch]);
                     }
                 }
             }
