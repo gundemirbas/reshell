@@ -1,9 +1,9 @@
-mod thread_stack;
-mod thread_registry;
+mod stack;
+mod registry;
 mod spawn;
 
-use thread_stack::ThreadStack;
-pub use thread_registry::{get_thread_stats, register_thread, cleanup_threads};
+use stack::ThreadStack;
+pub use registry::{get_thread_stats, register_thread, cleanup_threads};
 pub use spawn::spawn_thread;
 
 use core::sync::atomic::{AtomicU16, AtomicI32, Ordering};

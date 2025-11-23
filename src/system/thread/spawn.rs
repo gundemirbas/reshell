@@ -1,5 +1,5 @@
 use crate::syscalls::{sys_clone_with_func, CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_THREAD};
-use super::thread_stack::ThreadStack;
+use super::stack::ThreadStack;
 
 /// Safe wrapper for spawning threads with custom stacks
 /// 
