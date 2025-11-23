@@ -21,8 +21,8 @@ function connect() {
         ws = new WebSocket(wsUrl);
         
         ws.onopen = () => {
-            addOutput('[INFO] Connected to shared shell!\n', 'info');
-            addOutput('[INFO] Type anywhere - your input is echoed locally\n', 'info');
+            addOutput('[INFO] Connected to your personal shell!\n', 'info');
+            addOutput('[INFO] Each browser has its own isolated session\n', 'info');
             addOutput('[INFO] Commands: pwd, ls, cd, echo, env, threads\n', 'info');
             addOutput('[INFO] Press Enter to execute\n\n', 'info');
             updateStatus(true);
@@ -111,29 +111,19 @@ document.addEventListener('keydown', (e) => {
     // Prevent default for most keys
     e.preventDefault();
     
-    // Handle special keys
+    // Handle special keys - Server echoes everything, no local echo needed
     if (e.key === 'Enter') {
-        addOutput('\n'); // Local echo newline
         sendChar('\n');
     } else if (e.key === 'Backspace') {
-        // Visual backspace (remove last character from display)
-        const text = output.textContent;
-        if (text.length > 0 && text[text.length - 1] !== '\n') {
-            output.textContent = text.slice(0, -1);
-        }
         sendChar('\x7f');
     } else if (e.key === 'Tab') {
-        addOutput('    '); // Show 4 spaces for tab
         sendChar('\t');
     } else if (e.ctrlKey && e.key === 'c') {
-        addOutput('^C\n'); // Show Ctrl+C
         sendChar('\x03');
     } else if (e.ctrlKey && e.key === 'd') {
-        addOutput('^D\n'); // Show Ctrl+D
         sendChar('\x04');
     } else if (e.key.length === 1) {
-        // Regular character - echo locally
-        addOutput(e.key);
+        // Send character to server - server will echo it back
         sendChar(e.key);
     }
     

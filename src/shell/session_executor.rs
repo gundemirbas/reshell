@@ -104,9 +104,19 @@ fn execute_builtin_ls(session: &ShellSession, path: &[u8]) {
     use crate::utils::{trim_spaces, sort_entries};
     
     let path = trim_spaces(path);
-    let dir_path = if path.is_empty() { b".\0" } else { path };
     
-    let fd = open(dir_path, O_RDONLY | O_DIRECTORY);
+    // Prepare path with null terminator
+    let mut path_with_null = [0u8; 512];
+    if path.is_empty() {
+        path_with_null[0] = b'.';
+        path_with_null[1] = 0;
+    } else {
+        let copy_len = path.len().min(511);
+        path_with_null[..copy_len].copy_from_slice(&path[..copy_len]);
+        path_with_null[copy_len] = 0;
+    }
+    
+    let fd = open(&path_with_null, O_RDONLY | O_DIRECTORY);
     if fd < 0 {
         session.write_output(b"ls: cannot open directory\n");
         return;
