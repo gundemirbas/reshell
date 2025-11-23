@@ -170,6 +170,8 @@ pub fn websocket_frame_loop_with_index(client_fd: i32, client_idx: usize) {
 fn websocket_frame_loop(client_fd: i32, session_id: usize) {
     use crate::syscalls::{poll, PollFd, POLLIN};
     
+    print(b"[WS] Frame loop started\n");
+    
     let session = match get_session(session_id) {
         Some(s) => s,
         None => {
@@ -178,11 +180,15 @@ fn websocket_frame_loop(client_fd: i32, session_id: usize) {
         }
     };
     
+    print(b"[WS] Session obtained\n");
+    
     let mut buf = [0u8; 1024];
     let mut output_buf = [0u8; 4096];
     
+    print(b"[WS] Sending welcome message...\n");
     // Send welcome message
     send_websocket_text(client_fd, b"Welcome to ReShell!\n$ ");
+    print(b"[WS] Welcome message sent\n");
     
     loop {
         use crate::syscalls::should_shutdown;

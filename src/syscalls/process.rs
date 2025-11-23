@@ -29,44 +29,51 @@ pub const CLONE_FILES: u64 = 0x00000400;
 pub const CLONE_SIGHAND: u64 = 0x00000800;
 pub const CLONE_THREAD: u64 = 0x00010000;
 
+// Thread wrapper that calls the actual function
+extern "C" fn thread_wrapper() -> ! {
+    unsafe {
+        // Function pointer is passed via a global static
+        if let Some(func) = THREAD_FUNC.take() {
+            func();
+        }
+    }
+    sys_exit(1);
+}
+
+static mut THREAD_FUNC: Option<fn() -> !> = None;
+
 pub unsafe fn sys_clone_with_func(
     flags: u64,
     stack: *mut u8,
     func: fn() -> !,
 ) -> isize {
-    let func_ptr = func as usize;
-    let aligned_top = (stack as usize) & !0xF;
-    let func_slot = (aligned_top - 8) as *mut usize;
+    // Store function pointer in static
+    THREAD_FUNC = Some(func);
     
-    *func_slot = func_ptr;
+    // Align stack to 16 bytes
+    let aligned_stack = ((stack as usize) & !0xF) as *mut u8;
     
-    let child_stack = func_slot as *mut u8;
+    // Call clone syscall with wrapper function
     let ret: isize;
     
     core::arch::asm!(
-        "mov rax, 56",
+        "mov rax, 56",           // clone syscall number
         "syscall",
-        "test rax, rax",
-        "jnz 2f",
-        "pop rax",
-        "xor rbp, rbp",
-        "and rsp, -16",
-        "push rbp",
-        "jmp rax",
-        "2:",
+        "test rax, rax",         // Check if we're in child (rax == 0)
+        "jnz 2f",                // If parent, jump to return
+        // Child process execution
+        "xor rbp, rbp",          // Clear frame pointer
+        "call {wrapper}",         // Call wrapper function
+        "2:",                     // Parent returns here
+        wrapper = sym thread_wrapper,
         in("rdi") flags,
-        in("rsi") child_stack,
+        in("rsi") aligned_stack,
         in("rdx") 0u64,
         in("r10") 0u64,
         in("r8") 0u64,
         lateout("rax") ret,
         lateout("rcx") _,
         lateout("r11") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
-        lateout("rdx") _,
-        lateout("r10") _,
-        lateout("r8") _,
     );
     
     ret

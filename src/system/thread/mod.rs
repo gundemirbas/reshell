@@ -61,7 +61,13 @@ macro_rules! make_ws_handler {
             use crate::syscalls::sys_exit;
             use crate::io::print_number;
             
+            print(b"[WS Handler] Entry point reached\n");
+            
             let client_fd = WS_THREAD_FD[$idx].load(Ordering::Acquire);
+            
+            print(b"[WS Handler] FD loaded: ");
+            print_number(client_fd as i64);
+            print(b"\n");
             
             if client_fd <= 0 {
                 print(b"[WS Thread] No client FD\n");
