@@ -6,7 +6,7 @@ use stack::ThreadStack;
 pub use registry::{get_thread_stats, register_thread, cleanup_threads};
 pub use spawn::spawn_thread;
 
-use core::sync::atomic::{AtomicU16, AtomicI32, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicI32, AtomicBool, Ordering};
 use crate::syscalls::{nanosleep, close};
 use crate::io::print;
 
@@ -16,6 +16,7 @@ static HTTP_PORT: AtomicU16 = AtomicU16::new(0);
 const MAX_WS_THREADS: usize = 16;
 static WS_STACKS: [ThreadStack; MAX_WS_THREADS] = [const { ThreadStack::new() }; MAX_WS_THREADS];
 static WS_CLIENT_FDS: [AtomicI32; MAX_WS_THREADS] = [const { AtomicI32::new(0) }; MAX_WS_THREADS];
+static WS_THREAD_ACTIVE: [AtomicBool; MAX_WS_THREADS] = [const { AtomicBool::new(false) }; MAX_WS_THREADS];
 
 fn http_server_func() -> ! {
     use crate::network::start_http_server;
@@ -51,52 +52,80 @@ pub fn start_http_server_thread(port: u16) {
     }
 }
 
-static WS_CLIENT_INDICES: [AtomicI32; MAX_WS_THREADS] = [const { AtomicI32::new(-1) }; MAX_WS_THREADS];
+// Per-thread WebSocket handlers - each gets its own function to avoid race conditions
+static WS_THREAD_FD: [AtomicI32; MAX_WS_THREADS] = [const { AtomicI32::new(0) }; MAX_WS_THREADS];
 
-fn websocket_handler_func() -> ! {
-    use crate::syscalls::sys_exit;
-    
-    let mut client_fd = 0;
-    let mut client_idx = 0;
-    
-    for i in 0..MAX_WS_THREADS {
-        let idx = WS_CLIENT_INDICES[i].load(Ordering::Acquire);
-        if idx >= 0 {
-            client_idx = idx as usize;
-            client_fd = WS_CLIENT_FDS[i].load(Ordering::Acquire);
-            WS_CLIENT_INDICES[i].store(-1, Ordering::Release); // Clear marker
-            break;
+macro_rules! make_ws_handler {
+    ($idx:expr) => {{
+        fn handler() -> ! {
+            use crate::syscalls::sys_exit;
+            use crate::io::print_number;
+            
+            let client_fd = WS_THREAD_FD[$idx].load(Ordering::Acquire);
+            
+            if client_fd <= 0 {
+                print(b"[WS Thread] No client FD\n");
+                sys_exit(1);
+            }
+            
+            print(b"[WS Thread ");
+            print_number($idx as i64);
+            print(b"] Starting (fd=");
+            print_number(client_fd as i64);
+            print(b")\n");
+            
+            use crate::network::websocket::websocket_frame_loop_with_index;
+            websocket_frame_loop_with_index(client_fd, $idx);
+            
+            print(b"[WS Thread ");
+            print_number($idx as i64);
+            print(b"] Closing connection\n");
+            
+            close(client_fd);
+            WS_CLIENT_FDS[$idx].store(0, Ordering::Release);
+            WS_THREAD_ACTIVE[$idx].store(false, Ordering::Release);
+            
+            sys_exit(0);
+        }
+        handler
+    }};
+}
+
+fn get_ws_handler(idx: usize) -> fn() -> ! {
+    match idx {
+        0 => make_ws_handler!(0),
+        1 => make_ws_handler!(1),
+        2 => make_ws_handler!(2),
+        3 => make_ws_handler!(3),
+        4 => make_ws_handler!(4),
+        5 => make_ws_handler!(5),
+        6 => make_ws_handler!(6),
+        7 => make_ws_handler!(7),
+        8 => make_ws_handler!(8),
+        9 => make_ws_handler!(9),
+        10 => make_ws_handler!(10),
+        11 => make_ws_handler!(11),
+        12 => make_ws_handler!(12),
+        13 => make_ws_handler!(13),
+        14 => make_ws_handler!(14),
+        15 => make_ws_handler!(15),
+        _ => {
+            fn fallback() -> ! {
+                use crate::syscalls::sys_exit;
+                print(b"[WS Thread] Invalid slot\n");
+                sys_exit(1);
+            }
+            fallback
         }
     }
-    
-    if client_fd <= 0 {
-        print(b"[WS Thread] No client FD\n");
-        sys_exit(1);
-    }
-    
-    use crate::io::{print_number};
-    print(b"[WS Thread] Starting frame loop (client_idx=");
-    print_number(client_idx as i64);
-    print(b", fd=");
-    print_number(client_fd as i64);
-    print(b")\n");
-    
-    use crate::network::websocket::websocket_frame_loop_with_index;
-    websocket_frame_loop_with_index(client_fd, client_idx);
-    
-    print(b"[WS Thread] Closing connection\n");
-    close(client_fd);
-    
-    WS_CLIENT_FDS[client_idx].store(0, Ordering::Release);
-    
-    sys_exit(0);
 }
 
 pub fn start_websocket_thread(client_fd: i32) -> bool {
+    // Find available slot
     let mut slot = None;
     for i in 0..MAX_WS_THREADS {
-        let current = WS_CLIENT_FDS[i].load(Ordering::Acquire);
-        if current == 0 {
+        let active = WS_THREAD_ACTIVE[i].load(Ordering::Acquire);
+        if !active {
             slot = Some(i);
             break;
         }
@@ -110,24 +139,31 @@ pub fn start_websocket_thread(client_fd: i32) -> bool {
         }
     };
     
+    // Mark slot as active before starting thread
+    WS_THREAD_ACTIVE[slot_idx].store(true, Ordering::Release);
+    WS_THREAD_FD[slot_idx].store(client_fd, Ordering::Release);
     WS_CLIENT_FDS[slot_idx].store(client_fd, Ordering::Release);
-    WS_CLIENT_INDICES[slot_idx].store(slot_idx as i32, Ordering::Release);
     
+    // Allocate stack
     if !WS_STACKS[slot_idx].allocate() {
         print(b"[ERROR] Failed to allocate WebSocket stack\n");
         WS_CLIENT_FDS[slot_idx].store(0, Ordering::Release);
-        WS_CLIENT_INDICES[slot_idx].store(-1, Ordering::Release);
+        WS_THREAD_ACTIVE[slot_idx].store(false, Ordering::Release);
         return false;
     }
     
-    let tid = match spawn_thread(&WS_STACKS[slot_idx], websocket_handler_func) {
+    // Get the appropriate handler for this slot
+    let handler = get_ws_handler(slot_idx);
+    
+    // Spawn thread
+    let tid = match spawn_thread(&WS_STACKS[slot_idx], handler) {
         Ok(tid) => tid,
         Err(err) => {
             print(b"[ERROR] Failed to start WebSocket thread: ");
             print(err.as_bytes());
             print(b"\n");
             WS_CLIENT_FDS[slot_idx].store(0, Ordering::Release);
-            WS_CLIENT_INDICES[slot_idx].store(-1, Ordering::Release);
+            WS_THREAD_ACTIVE[slot_idx].store(false, Ordering::Release);
             return false;
         }
     };
