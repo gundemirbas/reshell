@@ -1,6 +1,10 @@
 # Always ignore target directory
 target/
 
+# Ignore markdown and shell scripts
+*.md
+*.sh
+
 # Ignore these extensions in root and other directories
 /*.rs
 /*.html
