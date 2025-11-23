@@ -56,13 +56,11 @@ fn bytes_less_than(a: &[u8], b: &[u8]) -> bool {
     a.len() < b.len()
 }
 
-
 pub fn sort_entries(entries: &mut [[u8; 256]], count: usize) {
     if count <= 1 {
         return;
     }
     
-    // Bubble sort - simple and small code
     for i in 0..count {
         for j in 0..(count - i - 1) {
             let mut len_a = 0;
@@ -80,7 +78,6 @@ pub fn sort_entries(entries: &mut [[u8; 256]], count: usize) {
                 let b = &entries[j + 1][..len_b];
                 
                 if !bytes_less_than(a, b) {
-                    // Swap
                     let temp = entries[j];
                     entries[j] = entries[j + 1];
                     entries[j + 1] = temp;

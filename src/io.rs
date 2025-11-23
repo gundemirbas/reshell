@@ -1,8 +1,54 @@
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crate::syscalls::{read, write, STDIN, STDOUT};
+
+// Output capture for broadcasting to WebSocket
+static OUTPUT_CAPTURE_ENABLED: AtomicBool = AtomicBool::new(false);
+static OUTPUT_BUFFER: [AtomicUsize; 4096] = [const { AtomicUsize::new(0) }; 4096];
+static OUTPUT_BUFFER_LEN: AtomicUsize = AtomicUsize::new(0);
+
+pub fn enable_output_capture() {
+    OUTPUT_BUFFER_LEN.store(0, Ordering::Release);
+    OUTPUT_CAPTURE_ENABLED.store(true, Ordering::Release);
+}
+
+pub fn disable_output_capture() {
+    OUTPUT_CAPTURE_ENABLED.store(false, Ordering::Release);
+}
+
+pub fn get_captured_output(out: &mut [u8]) -> usize {
+    let len = OUTPUT_BUFFER_LEN.load(Ordering::Acquire);
+    let copy_len = len.min(out.len());
+    
+    for i in 0..copy_len {
+        out[i] = OUTPUT_BUFFER[i].load(Ordering::Acquire) as u8;
+    }
+    
+    OUTPUT_BUFFER_LEN.store(0, Ordering::Release);
+    copy_len
+}
+
+fn append_to_capture(s: &[u8]) {
+    if !OUTPUT_CAPTURE_ENABLED.load(Ordering::Acquire) {
+        return;
+    }
+    
+    let mut len = OUTPUT_BUFFER_LEN.load(Ordering::Acquire);
+    
+    for &byte in s {
+        if len >= 4096 {
+            break;
+        }
+        OUTPUT_BUFFER[len].store(byte as usize, Ordering::Release);
+        len += 1;
+    }
+    
+    OUTPUT_BUFFER_LEN.store(len, Ordering::Release);
+}
 
 pub fn print(s: &[u8]) {
     write(STDOUT, s);
+    append_to_capture(s);
 }
 
 pub fn print_number(n: i64) {
@@ -39,21 +85,25 @@ impl CStr {
         }
     }
     
-    pub fn as_bytes(&self) -> &[u8] {
+    fn len(&self) -> usize {
+        let mut len = 0;
         unsafe {
-            let mut len = 0;
-            while *self.ptr.add(len) != 0 && len < 4096 {
+            while len < 4096 && *self.ptr.add(len) != 0 {
                 len += 1;
             }
-            core::slice::from_raw_parts(self.ptr, len)
         }
+        len
+    }
+    
+    pub fn as_bytes(&self) -> &[u8] {
+        let len = self.len();
+        unsafe { core::slice::from_raw_parts(self.ptr, len) }
     }
 }
 
-
-
 pub struct StaticBuffer {
     data: UnsafeCell<[u8; 128]>,
+    locked: AtomicBool,
 }
 
 unsafe impl Sync for StaticBuffer {}
@@ -62,6 +112,7 @@ impl StaticBuffer {
     pub const fn new() -> Self {
         Self {
             data: UnsafeCell::new([0u8; 128]),
+            locked: AtomicBool::new(false),
         }
     }
     
@@ -69,10 +120,17 @@ impl StaticBuffer {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        unsafe {
+        while self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        
+        let result = unsafe {
             let buf = &mut *self.data.get();
             f(buf)
-        }
+        };
+        
+        self.locked.store(false, Ordering::Release);
+        result
     }
 }
 
@@ -81,12 +139,10 @@ pub fn read_line(buf: &mut [u8]) -> usize {
     if n > 0 { n as usize } else { 0 }
 }
 
-// Simple tab-completion aware input
 pub fn read_line_with_tab(buf: &mut [u8]) -> usize {
     use crate::syscalls::ioctl;
     use crate::syscalls::{Termios, TCGETS, TCSETS, ICANON, ECHO};
     
-    // Get current terminal settings
     let mut old_term = Termios {
         c_iflag: 0,
         c_oflag: 0,
@@ -101,11 +157,9 @@ pub fn read_line_with_tab(buf: &mut [u8]) -> usize {
     
     let old_ptr = &mut old_term as *mut Termios as u64;
     if ioctl(STDIN, TCGETS, old_ptr) < 0 {
-        // If ioctl fails, fall back to regular read
         return read_line(buf);
     }
     
-    // Set raw mode
     let mut raw_term = old_term;
     raw_term.c_lflag &= !(ICANON | ECHO);
     
@@ -128,8 +182,7 @@ pub fn read_line_with_tab(buf: &mut [u8]) -> usize {
             buf[pos] = b'\n';
             pos += 1;
             break;
-        } else if ch == 9 { // Tab
-            // Simple hardcoded tab completion - only for single char prefixes
+        } else if ch == 9 {
             if pos == 1 {
                 let ch = buf[0];
                 let completion: Option<&[u8]> = match ch {
@@ -144,9 +197,7 @@ pub fn read_line_with_tab(buf: &mut [u8]) -> usize {
                 };
                 
                 if let Some(comp) = completion {
-                    // Clear current char
                     write(STDOUT, b"\x08 \x08");
-                    // Write completion
                     write(STDOUT, comp);
                     pos = 0;
                     for &b in comp {
@@ -156,17 +207,17 @@ pub fn read_line_with_tab(buf: &mut [u8]) -> usize {
                         }
                     }
                 } else {
-                    write(STDOUT, b"\x07"); // Beep
+                    write(STDOUT, b"\x07");
                 }
             } else {
-                write(STDOUT, b"\x07"); // Beep
+                write(STDOUT, b"\x07");
             }
-        } else if ch == 127 || ch == 8 { // Backspace
+        } else if ch == 127 || ch == 8 {
             if pos > 0 {
                 pos -= 1;
                 write(STDOUT, b"\x08 \x08");
             }
-        } else if ch == 3 { // Ctrl+C
+        } else if ch == 3 {
             write(STDOUT, b"^C\n");
             pos = 0;
             break;
@@ -179,7 +230,6 @@ pub fn read_line_with_tab(buf: &mut [u8]) -> usize {
         }
     }
     
-    // Restore terminal settings
     ioctl(STDIN, TCSETS, old_ptr);
     
     pos

@@ -15,16 +15,16 @@ function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws`;
     
-    addOutput(`[INFO] Connecting to ${wsUrl}...\n`, 'info');
+    addOutput(`\n[INFO] Connecting to ${wsUrl}...\n`, 'info');
     
     try {
         ws = new WebSocket(wsUrl);
         
         ws.onopen = () => {
             addOutput('[INFO] Connected to shared shell!\n', 'info');
-            addOutput('[INFO] Type anywhere - your input is echoed locally\n', 'info');
-            addOutput('[INFO] Commands: pwd, ls, cd, echo, env, threads\n', 'info');
-            addOutput('[INFO] Press Enter to execute\n\n', 'info');
+            addOutput('[INFO] Type anywhere - keys are sent directly to shell\n', 'info');
+            addOutput('[INFO] Commands: pwd, ls, cd, echo, env, threads, exit\n', 'info');
+            addOutput('[INFO] Press Enter to execute commands\n\n', 'info');
             updateStatus(true);
             reconnectAttempts = 0;
             terminal.focus();
@@ -36,24 +36,28 @@ function connect() {
         };
         
         ws.onerror = (error) => {
-            addOutput('[ERROR] WebSocket error\n', 'error');
+            addOutput(`[ERROR] WebSocket error\n`, 'error');
             console.error('WebSocket error:', error);
         };
         
         ws.onclose = () => {
             addOutput('[INFO] Connection closed\n', 'info');
             updateStatus(false);
+            commandInput.disabled = true;
+            sendBtn.disabled = true;
             
+            // Attempt reconnection
             if (reconnectAttempts < maxReconnectAttempts) {
                 reconnectAttempts++;
-                addOutput(`[INFO] Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...\n`, 'info');
-                setTimeout(connect, 2000);
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                addOutput(`[INFO] Reconnecting in ${delay/1000}s... (attempt ${reconnectAttempts}/${maxReconnectAttempts})\n`, 'info');
+                setTimeout(connect, delay);
             } else {
-                addOutput('[ERROR] Max reconnection attempts reached\n', 'error');
+                addOutput('[ERROR] Max reconnection attempts reached. Please refresh the page.\n', 'error');
             }
         };
     } catch (error) {
-        addOutput(`[ERROR] Failed: ${error.message}\n`, 'error');
+        addOutput(`[ERROR] Failed to create WebSocket: ${error.message}\n`, 'error');
         updateStatus(false);
     }
 }
@@ -78,7 +82,6 @@ function addOutput(text, className = '') {
 // Clear terminal
 function clearTerminal() {
     output.innerHTML = '';
-    addOutput('[INFO] Terminal cleared\n', 'info');
 }
 
 // Update connection status
@@ -97,64 +100,42 @@ function scrollToBottom() {
     terminal.scrollTop = terminal.scrollHeight;
 }
 
-// Keypress handler with local echo
-document.addEventListener('keydown', (e) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        return;
-    }
-    
-    // Allow F5, F12, Ctrl+R for refresh
-    if (e.key === 'F5' || e.key === 'F12' || (e.ctrlKey && e.key === 'r')) {
-        return;
-    }
-    
-    // Prevent default for most keys
-    e.preventDefault();
-    
-    // Handle special keys
+// Event listeners
+commandInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
-        addOutput('\n'); // Local echo newline
-        sendChar('\n');
-    } else if (e.key === 'Backspace') {
-        // Visual backspace (remove last character from display)
-        const text = output.textContent;
-        if (text.length > 0 && text[text.length - 1] !== '\n') {
-            output.textContent = text.slice(0, -1);
-        }
-        sendChar('\x7f');
-    } else if (e.key === 'Tab') {
-        addOutput('    '); // Show 4 spaces for tab
-        sendChar('\t');
-    } else if (e.ctrlKey && e.key === 'c') {
-        addOutput('^C\n'); // Show Ctrl+C
-        sendChar('\x03');
-    } else if (e.ctrlKey && e.key === 'd') {
-        addOutput('^D\n'); // Show Ctrl+D
-        sendChar('\x04');
-    } else if (e.key.length === 1) {
-        // Regular character - echo locally
-        addOutput(e.key);
-        sendChar(e.key);
+        sendCommand();
     }
-    
-    scrollToBottom();
 });
 
-// Click to focus terminal
-terminal.addEventListener('click', () => {
-    terminal.focus();
-});
-
-// Clear button
+sendBtn.addEventListener('click', sendCommand);
 clearBtn.addEventListener('click', clearTerminal);
 
-// Make terminal focusable
-terminal.setAttribute('tabindex', '0');
+// Handle special keys
+commandInput.addEventListener('keydown', (e) => {
+    // Ctrl+C
+    if (e.ctrlKey && e.key === 'c') {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send('\x03'); // Send Ctrl+C
+            e.preventDefault();
+        }
+    }
+    // Ctrl+D
+    else if (e.ctrlKey && e.key === 'd') {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send('\x04'); // Send Ctrl+D (EOF)
+            e.preventDefault();
+        }
+    }
+});
 
-// Connect on load
-connect();
-
-// Focus terminal on page load
+// Start connection when page loads
 window.addEventListener('load', () => {
-    setTimeout(() => terminal.focus(), 100);
+    connect();
+});
+
+// Close connection when page unloads
+window.addEventListener('beforeunload', () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+    }
 });

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Terminal - reshell</title>
+    <title>Collaborative Terminal - reshell</title>
     <style>
         * {
             margin: 0;
@@ -73,22 +73,14 @@
             border-top: 1px solid #3e3e3e;
             display: flex;
             gap: 10px;
+            align-items: center;
+            justify-content: space-between;
         }
         
-        .input-container input {
+        .input-info {
+            color: #858585;
+            font-size: 12px;
             flex: 1;
-            background: #3e3e3e;
-            border: 1px solid #555;
-            color: #d4d4d4;
-            padding: 8px 12px;
-            font-family: 'Courier New', Courier, monospace;
-            font-size: 14px;
-            border-radius: 3px;
-        }
-        
-        .input-container input:focus {
-            outline: none;
-            border-color: #4ec9b0;
         }
         
         .input-container button {
@@ -106,9 +98,12 @@
             background: #3eb89f;
         }
         
-        .input-container button:disabled {
-            background: #555;
-            cursor: not-allowed;
+        .terminal-container {
+            cursor: text;
+        }
+        
+        .terminal-container:focus {
+            outline: 2px solid #4ec9b0;
         }
         
         .error {
@@ -124,7 +119,7 @@
 </head>
 <body>
     <div class="header">
-        <h1>📟 reshell Terminal</h1>
+        <h1>📟 reshell - Collaborative Terminal</h1>
         <div class="status">
             <span id="status-text">Disconnected</span>
             <div class="status-indicator" id="status-indicator"></div>
@@ -133,19 +128,16 @@
     
     <div class="terminal-container" id="terminal">
         <div class="terminal-output" id="output">
+            <span class="info">Collaborative Terminal - Multiple users share the same shell</span>
             <span class="info">Connecting to server...</span>
         </div>
     </div>
     
     <div class="input-container">
-        <input 
-            type="text" 
-            id="command-input" 
-            placeholder="Type command and press Enter or click Send..." 
-            disabled
-        />
-        <button id="send-btn" disabled>Send</button>
-        <button id="clear-btn">Clear</button>
+        <div class="input-info">
+            💡 Click on the terminal to start typing. Keys are sent directly to the shell.
+        </div>
+        <button id="clear-btn">Clear Output</button>
     </div>
     
     <script src="terminal.js"></script>
