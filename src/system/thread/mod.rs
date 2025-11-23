@@ -1,12 +1,13 @@
 mod thread_stack;
 mod thread_registry;
+mod spawn;
 
 use thread_stack::ThreadStack;
 pub use thread_registry::{get_thread_stats, register_thread, cleanup_threads};
+pub use spawn::spawn_thread;
 
 use core::sync::atomic::{AtomicU16, AtomicI32, Ordering};
-use crate::syscalls::{nanosleep, sys_clone_with_func, close};
-use crate::syscalls::{CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_THREAD};
+use crate::syscalls::{nanosleep, close};
 use crate::io::print;
 
 static HTTP_STACK: ThreadStack = ThreadStack::new_large();
@@ -37,23 +38,16 @@ pub fn start_http_server_thread(port: u16) {
         return;
     }
     
-    let flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
-    let stack_top = HTTP_STACK.get_stack_top();
-    
-    if stack_top.is_null() {
-        print(b"[ERROR] Invalid HTTP stack\n");
-        return;
-    }
-    
-    let tid = unsafe {
-        sys_clone_with_func(flags, stack_top, http_server_func)
-    };
-    
-    if tid < 0 {
-        print(b"[ERROR] Failed to start HTTP server thread\n");
-    } else {
-        register_thread(tid as i32);
-        print(b"[INFO] HTTP server thread started\n");
+    match spawn_thread(&HTTP_STACK, http_server_func) {
+        Ok(tid) => {
+            register_thread(tid);
+            print(b"[INFO] HTTP server thread started\n");
+        }
+        Err(err) => {
+            print(b"[ERROR] Failed to start HTTP server thread: ");
+            print(err.as_bytes());
+            print(b"\n");
+        }
     }
 }
 
@@ -126,28 +120,19 @@ pub fn start_websocket_thread(client_fd: i32) -> bool {
         return false;
     }
     
-    let flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
-    let stack_top = WS_STACKS[slot_idx].get_stack_top();
-    
-    if stack_top.is_null() {
-        print(b"[ERROR] Invalid WebSocket stack\n");
-        WS_CLIENT_FDS[slot_idx].store(0, Ordering::Release);
-        WS_CLIENT_INDICES[slot_idx].store(-1, Ordering::Release);
-        return false;
-    }
-    
-    let tid = unsafe {
-        sys_clone_with_func(flags, stack_top, websocket_handler_func)
+    let tid = match spawn_thread(&WS_STACKS[slot_idx], websocket_handler_func) {
+        Ok(tid) => tid,
+        Err(err) => {
+            print(b"[ERROR] Failed to start WebSocket thread: ");
+            print(err.as_bytes());
+            print(b"\n");
+            WS_CLIENT_FDS[slot_idx].store(0, Ordering::Release);
+            WS_CLIENT_INDICES[slot_idx].store(-1, Ordering::Release);
+            return false;
+        }
     };
     
-    if tid < 0 {
-        print(b"[ERROR] Failed to start WebSocket thread\n");
-        WS_CLIENT_FDS[slot_idx].store(0, Ordering::Release);
-        WS_CLIENT_INDICES[slot_idx].store(-1, Ordering::Release);
-        return false;
-    }
-    
-    register_thread(tid as i32);
+    register_thread(tid);
     
     use crate::io::print_number;
     print(b"[WS Thread] WebSocket handler thread started (slot=");
