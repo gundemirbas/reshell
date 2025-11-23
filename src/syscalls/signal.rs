@@ -1,3 +1,4 @@
+use super::macros::*;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -28,26 +29,6 @@ impl SigAction {
             sa_mask: [0; 16],
         }
     }
-}
-
-macro_rules! syscall4 {
-    ($num:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr) => {{
-        let ret: isize;
-        unsafe {
-            core::arch::asm!(
-                "syscall",
-                in("rax") $num,
-                in("rdi") $arg1,
-                in("rsi") $arg2,
-                in("rdx") $arg3,
-                in("r10") $arg4,
-                lateout("rax") ret,
-                lateout("rcx") _,
-                lateout("r11") _,
-            );
-        }
-        ret
-    }};
 }
 
 pub fn rt_sigaction(signum: i32, act: *const SigAction, oldact: *mut SigAction) -> isize {

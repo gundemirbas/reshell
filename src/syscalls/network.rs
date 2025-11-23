@@ -1,3 +1,5 @@
+use super::macros::*;
+
 pub const AF_INET: i32 = 2;
 pub const SOCK_STREAM: i32 = 1;
 pub const SOL_SOCKET: i32 = 1;
@@ -9,64 +11,6 @@ pub struct SockaddrIn {
     pub sin_port: u16,
     pub sin_addr: u32,
     pub sin_zero: [u8; 8],
-}
-
-macro_rules! syscall3 {
-    ($num:expr, $arg1:expr, $arg2:expr, $arg3:expr) => {{
-        let ret: isize;
-        unsafe {
-            core::arch::asm!(
-                "syscall",
-                in("rax") $num,
-                in("rdi") $arg1,
-                in("rsi") $arg2,
-                in("rdx") $arg3,
-                lateout("rax") ret,
-                lateout("rcx") _,
-                lateout("r11") _,
-            );
-        }
-        ret
-    }};
-}
-
-macro_rules! syscall2 {
-    ($num:expr, $arg1:expr, $arg2:expr) => {{
-        let ret: isize;
-        unsafe {
-            core::arch::asm!(
-                "syscall",
-                in("rax") $num,
-                in("rdi") $arg1,
-                in("rsi") $arg2,
-                lateout("rax") ret,
-                lateout("rcx") _,
-                lateout("r11") _,
-            );
-        }
-        ret
-    }};
-}
-
-macro_rules! syscall5 {
-    ($num:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr) => {{
-        let ret: isize;
-        unsafe {
-            core::arch::asm!(
-                "syscall",
-                in("rax") $num,
-                in("rdi") $arg1,
-                in("rsi") $arg2,
-                in("rdx") $arg3,
-                in("r10") $arg4,
-                in("r8") $arg5,
-                lateout("rax") ret,
-                lateout("rcx") _,
-                lateout("r11") _,
-            );
-        }
-        ret
-    }};
 }
 
 pub fn socket(domain: i32, socket_type: i32, protocol: i32) -> isize {
