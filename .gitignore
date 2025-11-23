@@ -1,12 +1,21 @@
+# Allow only these extensions
+# Whitelist approach: ignore everything except .rs, .html, .toml, .js, .lock files
+
+# Ignore everything by default
+*
+
+# But allow these extensions
+!*.rs
+!*.html
+!*.toml
+!*.js
+!*.lock
+
+# Allow directories (so git can traverse them)
+!*/
+
 # Always ignore target directory
 target/
 
-# Ignore markdown and shell scripts
-*.md
-*.sh
-
-# Ignore these extensions in root and other directories
-/*.rs
-/*.html
-/*.toml
-/*.js
+# Ignore backup files
+*.backup
